@@ -1,0 +1,138 @@
+- hosts: localhost
+  connection: local
+      
+  tasks:
+
+    - name: Validate input size
+      fail:
+        msg: "Invalid size nodes|length not 3"
+      when: nodes|length != 3
+
+    - name: Validate input list  
+      fail: 
+        msg: "Invalid node IP address {{item}}"
+      with_items: nodes
+      when: not item | ipaddr
+
+ 
+    - name: register provided cluster nodes
+      add_host:
+        name: "{{ item }}"
+        groups: clusternodes
+      with_items: "{{ nodes }}"
+
+- hosts: clusternodes
+  remote_user: ubuntu
+  sudo: True
+  sudo_user: root
+  gather_facts: false
+
+  tasks:
+
+    - name: Install Python
+      raw: apt install -y python-simplejson
+
+- hosts: clusternodes
+  remote_user: ubuntu
+  sudo: True
+  sudo_user: root
+  tasks:
+
+    - name: Add java repository
+      apt_repository:
+        repo: ppa:webupd8team/java
+  
+    - name: Add Cassandra repo key
+      apt_key:
+        url: http://debian.datastax.com/debian/repo_key
+        state: present
+
+    - name: Upload cassandra repo source list
+      template:
+        src: ./templates/cassandra.sources.list.j2
+        dest: /etc/apt/sources.list.d/cassandra.sources.list
+ 
+    - name: Run apt-get update
+      apt:
+        update_cache: yes
+
+    - name: Skip manual Oracle license accepting
+      shell: echo debconf shared/accepted-oracle-license-v1-1 select true | debconf-set-selections
+  
+    - name: Create tmp Cassandra folder
+      file:
+        name: /tmp/cassandra/
+        state: directory 
+      
+    - name: Wget python-support package
+      get_url:
+        url: http://launchpadlibrarian.net/109052632/python-support_1.0.15_all.deb
+        dest: /tmp/cassandra/
+
+    - name: Install python-suppport
+      apt:
+        deb: /tmp/cassandra/python-support_1.0.15_all.deb
+
+    - name: Install all packages
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - ntp
+        - oracle-java8-installer
+        - oracle-java8-unlimited-jce-policy
+        - dsc30
+        - cassandra-tools
+
+    - name: Stop Cassandra
+      service:
+        name: cassandra
+        state: stopped
+
+    - name: Remove Cassandra data dir
+      file:
+        name: /var/lib/cassandra/data/system/
+        state: absent
+
+    - name: Create Cassandra data dir
+      file:
+        name: /var/lib/cassandra/data/system/
+        state: directory
+        owner: cassandra
+        group: cassandra
+
+    - name: Upload Cassandra JVM config
+      template:
+        src: ./templates/cassandra-env.sh.j2
+        dest: /etc/cassandra/cassandra-env.sh
+
+    - name: Upload Cassandra config
+      template:
+        src: ./templates/cassandra.yaml.j2
+        dest: /etc/cassandra/cassandra.yaml
+
+    - name: Upload IPtables saved file
+      template:
+        src: ./templates/iptables.saved.j2
+        dest: /tmp/cassandra/iptables.saved
+
+    - name: Apply IPtable rules
+      command: iptables-restore /tmp/cassandra/iptables.saved
+
+    - name: Start Cassandra
+      service:
+        name: cassandra
+        state: started
+
+    - name: Remove Cassandra tmp folder
+      file:
+        name: /tmp/cassandra/
+        state: absent
+
+    - name: wait some time till cluster is up
+      local_action:
+        module: pause
+        minutes: 1
+
+    - name: Check Cassandra cluster status
+      command: nodetool status
